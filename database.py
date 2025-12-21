@@ -3,7 +3,7 @@
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 DB_FILE = Path("noura_accounting.db")
 
@@ -18,6 +18,8 @@ class DatabaseManager:
         self.conn.row_factory = sqlite3.Row
         self._enable_foreign_keys()
         self._create_tables()
+        self._migrate_schema()
+        self._ensure_settings_row()
 
     def _enable_foreign_keys(self) -> None:
         self.conn.execute("PRAGMA foreign_keys = ON;")
@@ -44,6 +46,7 @@ class DatabaseManager:
                 name TEXT NOT NULL,
                 description TEXT,
                 unit_price REAL NOT NULL,
+                stock INTEGER NOT NULL DEFAULT 0,
                 unit TEXT,
                 created_at DATETIME
             )
@@ -79,7 +82,53 @@ class DatabaseManager:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                company_name TEXT,
+                company_phone TEXT,
+                company_address TEXT,
+                default_currency TEXT,
+                theme TEXT,
+                language TEXT
+            )
+            """
+        )
         self.conn.commit()
+
+    def _migrate_schema(self) -> None:
+        """Handle small schema evolutions safely.
+
+        The app might be running on an existing database. We keep migrations
+        lightweight and additive. For larger changes, deleting the local DB and
+        letting the app recreate it is also acceptable in early development
+        (documented here for clarity).
+        """
+
+        cur = self.conn.execute("PRAGMA table_info(products)")
+        columns = {row[1] for row in cur.fetchall()}
+        if "stock" not in columns:
+            self.conn.execute(
+                "ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 0"
+            )
+            self.conn.commit()
+
+    def _ensure_settings_row(self) -> None:
+        """Guarantee a singleton settings row with defaults."""
+
+        cur = self.conn.execute("SELECT COUNT(*) FROM settings WHERE id = 1")
+        count = cur.fetchone()[0]
+        if count == 0:
+            self.conn.execute(
+                """
+                INSERT INTO settings (
+                    id, company_name, company_phone, company_address, default_currency, theme, language
+                )
+                VALUES (1, 'Noura', '', '', 'USD', 'dark', 'en')
+                """
+            )
+            self.conn.commit()
 
     # Customer operations
     def fetch_customers(self) -> List[sqlite3.Row]:
@@ -132,7 +181,10 @@ class DatabaseManager:
     # Product operations
     def fetch_products(self) -> List[sqlite3.Row]:
         cur = self.conn.execute(
-            "SELECT id, name, description, unit_price, unit, created_at FROM products ORDER BY id DESC"
+            """
+            SELECT id, name, description, unit_price, stock, unit, created_at
+            FROM products ORDER BY id DESC
+            """
         )
         return cur.fetchall()
 
@@ -140,13 +192,14 @@ class DatabaseManager:
         now = datetime.utcnow().isoformat()
         cur = self.conn.execute(
             """
-            INSERT INTO products (name, description, unit_price, unit, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO products (name, description, unit_price, stock, unit, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 data.get("name"),
                 data.get("description"),
                 data.get("unit_price", 0.0),
+                data.get("stock", 0),
                 data.get("unit"),
                 now,
             ),
@@ -158,13 +211,14 @@ class DatabaseManager:
         self.conn.execute(
             """
             UPDATE products
-            SET name=?, description=?, unit_price=?, unit=?
+            SET name=?, description=?, unit_price=?, stock=?, unit=?
             WHERE id=?
             """,
             (
                 data.get("name"),
                 data.get("description"),
                 data.get("unit_price", 0.0),
+                data.get("stock", 0),
                 data.get("unit"),
                 product_id,
             ),
@@ -265,6 +319,46 @@ class DatabaseManager:
         )
         return cur.fetchall()
 
+    def get_invoice_with_items(self, invoice_id: int) -> Optional[Dict[str, Any]]:
+        """Return a full invoice payload with its items for printing/export."""
+
+        cur = self.conn.execute(
+            """
+            SELECT i.id, i.invoice_number, i.invoice_date, i.due_date, i.total_amount, i.status,
+                   c.name as customer_name, c.email as customer_email, c.address as customer_address
+            FROM invoices i
+            LEFT JOIN customers c ON c.id = i.customer_id
+            WHERE i.id=?
+            """,
+            (invoice_id,),
+        )
+        invoice_row = cur.fetchone()
+        if not invoice_row:
+            return None
+
+        items_cur = self.conn.execute(
+            """
+            SELECT p.name as product_name, ii.quantity, ii.unit_price, ii.line_total
+            FROM invoice_items ii
+            LEFT JOIN products p ON p.id = ii.product_id
+            WHERE ii.invoice_id=?
+            """,
+            (invoice_id,),
+        )
+        return {
+            "id": invoice_row["id"],
+            "number": invoice_row["invoice_number"],
+            "date": invoice_row["invoice_date"],
+            "due_date": invoice_row["due_date"],
+            "status": invoice_row["status"],
+            "customer_name": invoice_row["customer_name"],
+            "customer_email": invoice_row["customer_email"],
+            "customer_address": invoice_row["customer_address"],
+            "currency": None,
+            "total": invoice_row["total_amount"],
+            "items": [dict(row) for row in items_cur.fetchall()],
+        }
+
     def get_invoice(self, invoice_id: int) -> Optional[sqlite3.Row]:
         cur = self.conn.execute(
             "SELECT id, invoice_number, customer_id, invoice_date, due_date, total_amount, status FROM invoices WHERE id=?",
@@ -297,6 +391,61 @@ class DatabaseManager:
         )
         summary["status_breakdown"] = {row[0] or "Unknown": row[1] or 0.0 for row in cur.fetchall()}
         return summary
+
+    def get_invoice_status_totals(self) -> List[Tuple[str, float]]:
+        """Return (status, total_amount) pairs grouped by invoice status."""
+
+        cur = self.conn.execute(
+            "SELECT status, SUM(total_amount) as total FROM invoices GROUP BY status"
+        )
+        return [(row[0] or "Unknown", row[1] or 0.0) for row in cur.fetchall()]
+
+    # Settings helpers
+    def get_settings(self) -> Dict[str, Any]:
+        cur = self.conn.execute(
+            """
+            SELECT company_name, company_phone, company_address, default_currency, theme, language
+            FROM settings WHERE id = 1
+            """
+        )
+        row = cur.fetchone()
+        if not row:
+            # Should not happen because _ensure_settings_row enforces it, but
+            # return safe defaults just in case.
+            return {
+                "company_name": "Noura",
+                "company_phone": "",
+                "company_address": "",
+                "default_currency": "USD",
+                "theme": "dark",
+                "language": "en",
+            }
+        return dict(row)
+
+    def save_settings(
+        self,
+        company_name: str,
+        company_phone: str,
+        company_address: str,
+        default_currency: str,
+        theme: str,
+        language: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO settings (id, company_name, company_phone, company_address, default_currency, theme, language)
+            VALUES (1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                company_name=excluded.company_name,
+                company_phone=excluded.company_phone,
+                company_address=excluded.company_address,
+                default_currency=excluded.default_currency,
+                theme=excluded.theme,
+                language=excluded.language
+            """,
+            (company_name, company_phone, company_address, default_currency, theme, language),
+        )
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()

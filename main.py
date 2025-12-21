@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-from qt_compat import QtWidgets, QtGui, QtCore
+from qt_compat import QtWidgets, QtGui
 from database import get_database
 from ui.pages.dashboard import DashboardPage
 from ui.pages.customers import CustomersPage
@@ -11,6 +11,7 @@ from ui.pages.products import ProductsPage
 from ui.pages.invoices import InvoicesPage
 from ui.pages.reports import ReportsPage
 from ui.pages.settings import SettingsPage
+from ui.translations import translate
 
 APP_TITLE = "Noura Accounting"
 
@@ -18,10 +19,13 @@ APP_TITLE = "Noura Accounting"
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(APP_TITLE)
-        self.resize(1000, 700)
         self.db = get_database(Path("noura_accounting.db"))
+        self.settings = self.db.get_settings()
+        self.language = self.settings.get("language", "en")
+        self.setWindowTitle(self._window_title())
+        self.resize(1000, 700)
         self._build_ui()
+        self._apply_theme()
 
     def _build_ui(self):
         central = QtWidgets.QWidget()
@@ -36,17 +40,17 @@ class MainWindow(QtWidgets.QMainWindow):
         side_layout.setContentsMargins(10, 20, 10, 20)
         side_layout.setSpacing(10)
 
-        self.menu_buttons = []
-        menu_items = [
-            ("Dashboard", self.show_dashboard),
-            ("Customers", self.show_customers),
-            ("Products", self.show_products),
-            ("Invoices", self.show_invoices),
-            ("Reports", self.show_reports),
-            ("Settings", self.show_settings),
+        self.menu_buttons: list[QtWidgets.QPushButton] = []
+        self.menu_items = [
+            ("dashboard", self.show_dashboard),
+            ("customers", self.show_customers),
+            ("products", self.show_products),
+            ("invoices", self.show_invoices),
+            ("reports", self.show_reports),
+            ("settings", self.show_settings),
         ]
-        for label, handler in menu_items:
-            btn = QtWidgets.QPushButton(label)
+        for key, handler in self.menu_items:
+            btn = QtWidgets.QPushButton(translate(self.language, key))
             btn.setStyleSheet(
                 "QPushButton {padding:12px; text-align:left; border:none; background: transparent; color:white;}"
                 "QPushButton:hover {background-color: #34495e;}"
@@ -64,19 +68,20 @@ class MainWindow(QtWidgets.QMainWindow):
         top_bar = QtWidgets.QFrame()
         top_bar.setStyleSheet("background-color: #ecf0f1; border-bottom: 1px solid #bdc3c7;")
         top_layout = QtWidgets.QHBoxLayout(top_bar)
-        title_label = QtWidgets.QLabel(APP_TITLE)
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
-        top_layout.addWidget(title_label)
+        self.title_label = QtWidgets.QLabel(self._window_title())
+        self.title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        top_layout.addWidget(self.title_label)
         top_layout.addStretch()
         content_layout.addWidget(top_bar)
 
         self.stack = QtWidgets.QStackedWidget()
-        self.dashboard_page = DashboardPage(self.db)
+        self.dashboard_page = DashboardPage(self.db, self.settings)
         self.customers_page = CustomersPage(self.db)
-        self.products_page = ProductsPage(self.db)
-        self.invoices_page = InvoicesPage(self.db)
+        self.products_page = ProductsPage(self.db, self.language)
+        self.invoices_page = InvoicesPage(self.db, self.settings, self.language)
         self.reports_page = ReportsPage(self.db)
-        self.settings_page = SettingsPage()
+        self.settings_page = SettingsPage(self.db, self.language)
+        self.settings_page.settings_saved.connect(self._on_settings_saved)
 
         for page in (
             self.dashboard_page,
@@ -95,6 +100,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.setCentralWidget(central)
         self.show_dashboard()
+
+    def _window_title(self) -> str:
+        company = self.settings.get("company_name") or "Noura"
+        return f"{company} - {APP_TITLE}"
+
+    def _apply_theme(self) -> None:
+        theme = self.settings.get("theme", "dark")
+        if theme == "light":
+            palette = QtGui.QPalette()
+            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#f5f6fa"))
+            palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#2c3e50"))
+            palette.setColor(QtGui.QPalette.Base, QtGui.QColor("#ffffff"))
+            palette.setColor(QtGui.QPalette.Text, QtGui.QColor("#2c3e50"))
+            self.setPalette(palette)
+        else:
+            self.setPalette(self.style().standardPalette())
+
+    def _refresh_menu_labels(self) -> None:
+        for (key, _handler), btn in zip(self.menu_items, self.menu_buttons):
+            btn.setText(translate(self.language, key))
+        self.title_label.setText(self._window_title())
 
     # Navigation handlers
     def _activate_button(self, active_btn: QtWidgets.QPushButton):
@@ -132,7 +158,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def show_settings(self):
         self.stack.setCurrentWidget(self.settings_page)
+        self.settings_page.load_settings()
         self._activate_button(self.menu_buttons[5])
+
+    def _on_settings_saved(self, data: dict):
+        self.settings = self.db.get_settings()
+        self.language = self.settings.get("language", "en")
+        self.dashboard_page.update_settings(self.settings)
+        self.invoices_page.update_settings(self.settings, self.language)
+        self.products_page.update_language(self.language)
+        self.settings_page.update_language(self.language)
+        self._refresh_menu_labels()
+        self.setWindowTitle(self._window_title())
+        self._apply_theme()
 
     def closeEvent(self, event: QtGui.QCloseEvent):  # type: ignore[override]
         self.db.close()

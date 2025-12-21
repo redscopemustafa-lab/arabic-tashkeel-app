@@ -2,22 +2,29 @@
 
 from qt_compat import QtWidgets
 from ui.dialogs.product_dialog import ProductDialog
+from ui.translations import translate
 
 
 class ProductsPage(QtWidgets.QWidget):
-    def __init__(self, db, parent=None):
+    def __init__(self, db, language: str = "en", parent=None):
         super().__init__(parent)
         self.db = db
+        self.language = language
         self._build_ui()
+        self.load_products()
+
+    def update_language(self, language: str):
+        self.language = language
+        self._refresh_labels()
         self.load_products()
 
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
 
         button_row = QtWidgets.QHBoxLayout()
-        add_btn = QtWidgets.QPushButton("Add")
-        edit_btn = QtWidgets.QPushButton("Edit")
-        delete_btn = QtWidgets.QPushButton("Delete")
+        add_btn = QtWidgets.QPushButton(translate(self.language, "add"))
+        edit_btn = QtWidgets.QPushButton(translate(self.language, "edit"))
+        delete_btn = QtWidgets.QPushButton(translate(self.language, "delete"))
         add_btn.clicked.connect(self.add_product)
         edit_btn.clicked.connect(self.edit_product)
         delete_btn.clicked.connect(self.delete_product)
@@ -26,12 +33,13 @@ class ProductsPage(QtWidgets.QWidget):
         button_row.addStretch()
         layout.addLayout(button_row)
 
-        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table = QtWidgets.QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels([
             "ID",
             "Name",
             "Description",
             "Unit Price",
+            translate(self.language, "stock"),
             "Unit",
         ])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -39,12 +47,27 @@ class ProductsPage(QtWidgets.QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
 
+    def _refresh_labels(self):
+        headers = [
+            "ID",
+            "Name",
+            "Description",
+            "Unit Price",
+            translate(self.language, "stock"),
+            "Unit",
+        ]
+        self.table.setHorizontalHeaderLabels(headers)
+        button_row = self.layout().itemAt(0).layout()
+        button_row.itemAt(0).widget().setText(translate(self.language, "add"))
+        button_row.itemAt(1).widget().setText(translate(self.language, "edit"))
+        button_row.itemAt(2).widget().setText(translate(self.language, "delete"))
+
     def load_products(self):
         products = self.db.fetch_products()
         self.table.setRowCount(0)
         for row_idx, product in enumerate(products):
             self.table.insertRow(row_idx)
-            for col, key in enumerate(["id", "name", "description", "unit_price", "unit"]):
+            for col, key in enumerate(["id", "name", "description", "unit_price", "stock", "unit"]):
                 item = QtWidgets.QTableWidgetItem(str(product[key] or ""))
                 self.table.setItem(row_idx, col, item)
 
@@ -70,7 +93,8 @@ class ProductsPage(QtWidgets.QWidget):
             "name": self.table.item(row, 1).text(),
             "description": self.table.item(row, 2).text(),
             "unit_price": float(self.table.item(row, 3).text() or 0),
-            "unit": self.table.item(row, 4).text(),
+            "stock": int(self.table.item(row, 4).text() or 0),
+            "unit": self.table.item(row, 5).text(),
         }
         dialog = ProductDialog(self, data)
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
