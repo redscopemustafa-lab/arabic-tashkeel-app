@@ -220,4 +220,6 @@ class InvoicesPage(QtWidgets.QWidget):
         printer = QPrinter(QPrinter.HighResolution)
         printer.setOutputFormat(QPrinter.PdfFormat)
         printer.setOutputFileName(filename)
-        document.print(printer)
+        # Qt 6 (PySide6) exposes the print slot as print_ to avoid clashing with
+        # the Python keyword; calling it ensures compatibility across versions.
+        document.print_(printer)
