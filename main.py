@@ -7,10 +7,10 @@ from qt_compat import QtWidgets, QtGui, QtCore
 from database import get_database
 from ui.pages.dashboard import DashboardPage
 from ui.pages.customers import CustomersPage
-from ui.pages.products import ProductsPage
 from ui.pages.invoices import InvoicesPage
 from ui.pages.reports import ReportsPage
-from ui.pages.settings import SettingsPage
+from ui.dialogs.login_dialog import AdminLoginDialog
+from ui.admin_panel import AdminPanelWindow
 from ui.translations import translate
 
 APP_TITLE = "Noura Accounting"
@@ -46,10 +46,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.menu_items = [
             ("dashboard", self.show_dashboard),
             ("customers", self.show_customers),
-            ("products", self.show_products),
             ("invoices", self.show_invoices),
             ("reports", self.show_reports),
-            ("settings", self.show_settings),
         ]
         for key, handler in self.menu_items:
             btn = QtWidgets.QPushButton(translate(self.language, key))
@@ -57,6 +55,11 @@ class MainWindow(QtWidgets.QMainWindow):
             btn.clicked.connect(handler)
             self.menu_buttons.append(btn)
             side_layout.addWidget(btn)
+        # Admin panel launcher
+        self.admin_btn = QtWidgets.QPushButton(translate(self.language, "admin_panel"))
+        self.admin_btn.setStyleSheet(self._nav_button_style())
+        self.admin_btn.clicked.connect(self.open_admin_panel)
+        side_layout.addWidget(self.admin_btn)
         side_layout.addStretch()
 
         # Main area with top bar
@@ -78,19 +81,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack = QtWidgets.QStackedWidget()
         self.dashboard_page = DashboardPage(self.db, self.settings, self.language)
         self.customers_page = CustomersPage(self.db)
-        self.products_page = ProductsPage(self.db, self.language)
         self.invoices_page = InvoicesPage(self.db, self.settings, self.language)
         self.reports_page = ReportsPage(self.db)
-        self.settings_page = SettingsPage(self.db, self.language)
-        self.settings_page.settings_saved.connect(self._on_settings_saved)
 
         for page in (
             self.dashboard_page,
             self.customers_page,
-            self.products_page,
             self.invoices_page,
             self.reports_page,
-            self.settings_page,
         ):
             self.stack.addWidget(page)
 
@@ -157,10 +155,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.top_bar.setStyleSheet(topbar_style)
         # Refresh navigation button styling per theme
         self._activate_button(self.menu_buttons[self._page_index(self.current_page_key)])
+        if hasattr(self, "admin_btn"):
+            self.admin_btn.setStyleSheet(self._nav_button_style())
 
     def _refresh_menu_labels(self) -> None:
         for (key, _handler), btn in zip(self.menu_items, self.menu_buttons):
             btn.setText(translate(self.language, key))
+        self.admin_btn.setText(translate(self.language, "admin_panel"))
         self._update_title(self.current_page_key)
 
     # Navigation handlers
@@ -191,40 +192,44 @@ class MainWindow(QtWidgets.QMainWindow):
         self._activate_button(self.menu_buttons[1])
         self._update_title("customers")
 
-    def show_products(self):
-        self.stack.setCurrentWidget(self.products_page)
-        self.products_page.load_products()
-        self._activate_button(self.menu_buttons[2])
-        self._update_title("products")
-
     def show_invoices(self):
         self.stack.setCurrentWidget(self.invoices_page)
         self.invoices_page.load_invoices()
-        self._activate_button(self.menu_buttons[3])
+        self._activate_button(self.menu_buttons[2])
         self._update_title("invoices")
 
     def show_reports(self):
         self.stack.setCurrentWidget(self.reports_page)
         self.reports_page.refresh()
-        self._activate_button(self.menu_buttons[4])
+        self._activate_button(self.menu_buttons[3])
         self._update_title("reports")
-
-    def show_settings(self):
-        self.stack.setCurrentWidget(self.settings_page)
-        self.settings_page.load_settings()
-        self._activate_button(self.menu_buttons[5])
-        self._update_title("settings")
 
     def _on_settings_saved(self, data: dict):
         self.settings = self.db.get_settings()
         self.language = self.settings.get("language", "en")
         self.dashboard_page.update_settings(self.settings, self.language)
         self.invoices_page.update_settings(self.settings, self.language)
-        self.products_page.update_language(self.language)
-        self.settings_page.update_language(self.language)
         self._refresh_menu_labels()
         self.setWindowTitle(self._window_title())
         self._apply_theme()
+
+    def _on_admin_settings_updated(self):
+        self.settings = self.db.get_settings()
+        self.language = self.settings.get("language", "en")
+        self.dashboard_page.update_settings(self.settings, self.language)
+        self.invoices_page.update_settings(self.settings, self.language)
+        self._refresh_menu_labels()
+        self.setWindowTitle(self._window_title())
+        self._apply_theme()
+
+    def open_admin_panel(self):
+        dialog = AdminLoginDialog(self.db, self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            admin_window = AdminPanelWindow(self.db, self.language, parent=self)
+            admin_window.settings_updated.connect(self._on_admin_settings_updated)
+            admin_window.show()
+            # Keep reference to prevent garbage collection
+            self._admin_window = admin_window
 
     def closeEvent(self, event: QtGui.QCloseEvent):  # type: ignore[override]
         self.db.close()

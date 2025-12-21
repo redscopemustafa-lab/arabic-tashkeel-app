@@ -12,7 +12,7 @@ class InvoiceDialog(QtWidgets.QDialog):
         self.db = db
         self.invoice_id = invoice_id
         self.setWindowTitle("Invoice")
-        self.products = {p["id"]: p for p in self.db.fetch_products()}
+        self._load_products()
         self.settings = self.db.get_settings()
         self.max_discount = float(self.settings.get("max_discount", 0) or 0)
         self._build_ui()
@@ -98,8 +98,8 @@ class InvoiceDialog(QtWidgets.QDialog):
             self.customer_combo.addItem(c["name"], c["id"])
 
     def _load_products(self) -> None:
-        # already stored in self.products
-        pass
+        # Always refresh product cache from DB to pick up latest price changes.
+        self.products = {p["id"]: p for p in self.db.fetch_products()}
 
     def add_item_row(self, product_id: Optional[int] = None, description: str = "", quantity: float = 1.0, unit_price: float = 0.0, discount: float = 0.0):
         row = self.items_table.rowCount()
@@ -158,9 +158,15 @@ class InvoiceDialog(QtWidgets.QDialog):
         desc_edit: QtWidgets.QLineEdit = self.items_table.cellWidget(row, 1)
         price_spin: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 3)
         product_id = product_combo.currentData()
-        if product_id is not None and product_id in self.products:
-            product = self.products[product_id]
-            desc_edit.setText(product["description"] or product["name"])
+        product = None
+        if product_id is not None:
+            # Ensure we always get the freshest product data, including sale_price.
+            product = self.db.get_product(product_id)
+            if product:
+                # cache update so subsequent rows see updated values
+                self.products[product_id] = product
+        if product:
+            desc_edit.setText(product.get("description") or product.get("name"))
             sale_price = product.get("sale_price") or product.get("unit_price") or 0
             price_spin.setValue(float(sale_price))
         self.recalculate_totals()
@@ -169,16 +175,16 @@ class InvoiceDialog(QtWidgets.QDialog):
         total = 0.0
         for row in range(self.items_table.rowCount()):
             qty_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 2)
-        price_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 3)
-        discount_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 4)
-        qty = float(qty_widget.value()) if qty_widget else 0.0
-        price = float(price_widget.value()) if price_widget else 0.0
-        discount = float(discount_widget.value()) if discount_widget else 0.0
-        line_total = qty * price * (1 - discount / 100)
-        total += line_total
-        item = self.items_table.item(row, 5)
-        if item:
-            item.setText(f"{line_total:.2f}")
+            price_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 3)
+            discount_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 4)
+            qty = float(qty_widget.value()) if qty_widget else 0.0
+            price = float(price_widget.value()) if price_widget else 0.0
+            discount = float(discount_widget.value()) if discount_widget else 0.0
+            line_total = qty * price * (1 - discount / 100)
+            total += line_total
+            item = self.items_table.item(row, 5)
+            if item:
+                item.setText(f"{line_total:.2f}")
         self.total_label.setText(f"Total: {total:.2f}")
 
     def _collect_items(self) -> List[Dict[str, any]]:

@@ -37,12 +37,13 @@ class ProductsPage(QtWidgets.QWidget):
         button_row.addStretch()
         layout.addLayout(button_row)
 
-        self.table = QtWidgets.QTableWidget(0, 6)
+        self.table = QtWidgets.QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels([
             "ID",
             "Name",
             "Description",
-            "Unit Price",
+            "Cost Price",
+            "Sale Price",
             translate(self.language, "stock"),
             "Unit",
         ])
@@ -56,7 +57,8 @@ class ProductsPage(QtWidgets.QWidget):
             "ID",
             "Name",
             "Description",
-            "Unit Price",
+            "Cost Price",
+            "Sale Price",
             translate(self.language, "stock"),
             "Unit",
         ]
@@ -72,7 +74,15 @@ class ProductsPage(QtWidgets.QWidget):
         self.table.setRowCount(0)
         for row_idx, product in enumerate(products):
             self.table.insertRow(row_idx)
-            for col, key in enumerate(["id", "name", "description", "unit_price", "stock", "unit"]):
+            for col, key in enumerate([
+                "id",
+                "name",
+                "description",
+                "cost_price",
+                "sale_price",
+                "stock",
+                "unit",
+            ]):
                 item = QtWidgets.QTableWidgetItem(str(product[key] or ""))
                 self.table.setItem(row_idx, col, item)
 
@@ -97,9 +107,11 @@ class ProductsPage(QtWidgets.QWidget):
         data = {
             "name": self.table.item(row, 1).text(),
             "description": self.table.item(row, 2).text(),
-            "unit_price": float(self.table.item(row, 3).text() or 0),
-            "stock": int(self.table.item(row, 4).text() or 0),
-            "unit": self.table.item(row, 5).text(),
+            "cost_price": float(self.table.item(row, 3).text() or 0),
+            "sale_price": float(self.table.item(row, 4).text() or 0),
+            "unit_price": float(self.table.item(row, 4).text() or 0),
+            "stock": int(self.table.item(row, 5).text() or 0),
+            "unit": self.table.item(row, 6).text(),
         }
         dialog = ProductDialog(self, data)
         if dialog.exec_() == QtWidgets.QDialog.Accepted:

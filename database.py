@@ -338,6 +338,18 @@ class DatabaseManager:
         self.conn.execute("DELETE FROM products WHERE id=?", (product_id,))
         self.conn.commit()
 
+    def get_product(self, product_id: int) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute(
+            """
+            SELECT id, name, description, unit_price, cost_price, sale_price, stock, unit
+            FROM products
+            WHERE id=?
+            """,
+            (product_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
     # Invoice operations
     def add_invoice(self, invoice: Dict[str, Any], items: List[Dict[str, Any]]) -> int:
         now = datetime.utcnow().isoformat()
