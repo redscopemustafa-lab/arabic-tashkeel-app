@@ -235,8 +235,16 @@ class InvoiceDialog(QtWidgets.QDialog):
             "total_amount": sum(item["line_total"] for item in items),
         }
 
-        if self.invoice_id:
-            self.db.update_invoice(self.invoice_id, invoice_data, items)
-        else:
-            self.db.add_invoice(invoice_data, items)
+        try:
+            if self.invoice_id:
+                self.db.update_invoice(self.invoice_id, invoice_data, items)
+            else:
+                self.db.add_invoice(invoice_data, items)
+        except ValueError as exc:  # Stock validation error
+            QtWidgets.QMessageBox.warning(self, "Stock", str(exc))
+            return
+        except Exception as exc:  # Generic DB error
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save invoice: {exc}")
+            return
+
         self.accept()
