@@ -21,6 +21,10 @@ class ProductsPage(QtWidgets.QWidget):
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
 
+        self.title_label = QtWidgets.QLabel(translate(self.language, "products"))
+        self.title_label.setStyleSheet("font-size: 18px; font-weight: 600;")
+        layout.addWidget(self.title_label)
+
         button_row = QtWidgets.QHBoxLayout()
         add_btn = QtWidgets.QPushButton(translate(self.language, "add"))
         edit_btn = QtWidgets.QPushButton(translate(self.language, "edit"))
@@ -57,7 +61,8 @@ class ProductsPage(QtWidgets.QWidget):
             "Unit",
         ]
         self.table.setHorizontalHeaderLabels(headers)
-        button_row = self.layout().itemAt(0).layout()
+        button_row = self.layout().itemAt(1).layout()
+        self.title_label.setText(translate(self.language, "products"))
         button_row.itemAt(0).widget().setText(translate(self.language, "add"))
         button_row.itemAt(1).widget().setText(translate(self.language, "edit"))
         button_row.itemAt(2).widget().setText(translate(self.language, "delete"))

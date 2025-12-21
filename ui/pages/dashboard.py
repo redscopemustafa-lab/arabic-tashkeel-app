@@ -3,21 +3,32 @@
 from PySide6.QtCharts import QChart, QChartView, QPieSeries
 
 from qt_compat import QtWidgets, QtCore, QtGui
+from ui.translations import translate
 
 
 class DashboardPage(QtWidgets.QWidget):
-    def __init__(self, db, settings: dict | None = None, parent=None):
+    def __init__(self, db, settings: dict | None = None, language: str = "en", parent=None):
         super().__init__(parent)
         self.db = db
         self.settings = settings or {}
+        self.language = language
         self._build_ui()
         self.refresh()
 
-    def update_settings(self, settings: dict) -> None:
+    def update_settings(self, settings: dict, language: str | None = None) -> None:
         self.settings = settings
+        if language:
+            self.language = language
+            self.title_label.setText(translate(self.language, "dashboard"))
 
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        self.title_label = QtWidgets.QLabel(translate(self.language, "dashboard"))
+        self.title_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self.title_label.setStyleSheet("font-size: 20px; font-weight: 600;")
+        layout.addWidget(self.title_label)
+
         self.summary_label = QtWidgets.QLabel()
         self.summary_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self.summary_label.setStyleSheet("font-size: 16px;")
@@ -26,6 +37,7 @@ class DashboardPage(QtWidgets.QWidget):
         self.chart_view = QChartView()
         self.chart_view.setRenderHint(QtGui.QPainter.Antialiasing)
         self.chart_view.setMinimumHeight(280)
+        self.chart_view.setStyleSheet("background: transparent;")
         layout.addWidget(self.chart_view)
         layout.addStretch()
 
@@ -36,13 +48,22 @@ class DashboardPage(QtWidgets.QWidget):
             series.append("No Data", 1)
         else:
             for status, amount in totals:
-                series.append(status or "Unknown", amount or 0)
+                slice_item = series.append(status or "Unknown", amount or 0)
+                slice_item.setLabelVisible(True)
+
+        series.setHoleSize(0.45)
+        series.setLabelsVisible(True)
+        series.setLabelsPosition(QPieSeries.LabelOutside)
 
         chart = QChart()
         chart.addSeries(series)
-        chart.setTitle("Invoice totals by status")
+        chart.setAnimationOptions(QChart.SeriesAnimations)
         chart.legend().setVisible(True)
         chart.legend().setAlignment(QtCore.Qt.AlignBottom)
+        chart.setBackgroundVisible(False)
+        chart.setPlotAreaBackgroundVisible(False)
+        chart.setTitle("Invoice totals by status")
+        chart.setTitleBrush(QtGui.QBrush(QtGui.QColor("#d0d6e0")))
         self.chart_view.setChart(chart)
 
     def refresh(self):
