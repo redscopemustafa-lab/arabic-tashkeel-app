@@ -13,6 +13,8 @@ class InvoiceDialog(QtWidgets.QDialog):
         self.invoice_id = invoice_id
         self.setWindowTitle("Invoice")
         self.products = {p["id"]: p for p in self.db.fetch_products()}
+        self.settings = self.db.get_settings()
+        self.max_discount = float(self.settings.get("max_discount", 0) or 0)
         self._build_ui()
         self._load_customers()
         self._load_products()
@@ -47,12 +49,13 @@ class InvoiceDialog(QtWidgets.QDialog):
         layout.addLayout(form_layout)
 
         # Items table
-        self.items_table = QtWidgets.QTableWidget(0, 5)
+        self.items_table = QtWidgets.QTableWidget(0, 6)
         self.items_table.setHorizontalHeaderLabels([
             "Product",
             "Description",
             "Quantity",
             "Unit Price",
+            "Discount %",
             "Line Total",
         ])
         self.items_table.horizontalHeader().setStretchLastSection(True)
@@ -98,7 +101,7 @@ class InvoiceDialog(QtWidgets.QDialog):
         # already stored in self.products
         pass
 
-    def add_item_row(self, product_id: Optional[int] = None, description: str = "", quantity: float = 1.0, unit_price: float = 0.0):
+    def add_item_row(self, product_id: Optional[int] = None, description: str = "", quantity: float = 1.0, unit_price: float = 0.0, discount: float = 0.0):
         row = self.items_table.rowCount()
         self.items_table.insertRow(row)
 
@@ -122,7 +125,13 @@ class InvoiceDialog(QtWidgets.QDialog):
         price_spin.setDecimals(2)
         price_spin.setValue(unit_price)
 
-        for widget in (qty_spin, price_spin):
+        discount_spin = QtWidgets.QDoubleSpinBox()
+        discount_spin.setRange(0, 100)
+        discount_spin.setValue(discount)
+        if self.max_discount:
+            discount_spin.setMaximum(self.max_discount)
+
+        for widget in (qty_spin, price_spin, discount_spin):
             widget.valueChanged.connect(self.recalculate_totals)
         desc_edit.textChanged.connect(self.recalculate_totals)
 
@@ -130,10 +139,11 @@ class InvoiceDialog(QtWidgets.QDialog):
         self.items_table.setCellWidget(row, 1, desc_edit)
         self.items_table.setCellWidget(row, 2, qty_spin)
         self.items_table.setCellWidget(row, 3, price_spin)
+        self.items_table.setCellWidget(row, 4, discount_spin)
 
         line_total_item = QtWidgets.QTableWidgetItem("0.00")
         line_total_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
-        self.items_table.setItem(row, 4, line_total_item)
+        self.items_table.setItem(row, 5, line_total_item)
 
         self._sync_product_row(row)
 
@@ -151,21 +161,24 @@ class InvoiceDialog(QtWidgets.QDialog):
         if product_id is not None and product_id in self.products:
             product = self.products[product_id]
             desc_edit.setText(product["description"] or product["name"])
-            price_spin.setValue(float(product["unit_price"]))
+            sale_price = product.get("sale_price") or product.get("unit_price") or 0
+            price_spin.setValue(float(sale_price))
         self.recalculate_totals()
 
     def recalculate_totals(self):
         total = 0.0
         for row in range(self.items_table.rowCount()):
             qty_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 2)
-            price_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 3)
-            qty = float(qty_widget.value()) if qty_widget else 0.0
-            price = float(price_widget.value()) if price_widget else 0.0
-            line_total = qty * price
-            total += line_total
-            item = self.items_table.item(row, 4)
-            if item:
-                item.setText(f"{line_total:.2f}")
+        price_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 3)
+        discount_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 4)
+        qty = float(qty_widget.value()) if qty_widget else 0.0
+        price = float(price_widget.value()) if price_widget else 0.0
+        discount = float(discount_widget.value()) if discount_widget else 0.0
+        line_total = qty * price * (1 - discount / 100)
+        total += line_total
+        item = self.items_table.item(row, 5)
+        if item:
+            item.setText(f"{line_total:.2f}")
         self.total_label.setText(f"Total: {total:.2f}")
 
     def _collect_items(self) -> List[Dict[str, any]]:
@@ -175,9 +188,11 @@ class InvoiceDialog(QtWidgets.QDialog):
             desc_edit: QtWidgets.QLineEdit = self.items_table.cellWidget(row, 1)
             qty_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 2)
             price_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 3)
+            discount_widget: QtWidgets.QDoubleSpinBox = self.items_table.cellWidget(row, 4)
             description = desc_edit.text().strip()
             qty = float(qty_widget.value()) if qty_widget else 0.0
             price = float(price_widget.value()) if price_widget else 0.0
+            discount = float(discount_widget.value()) if discount_widget else 0.0
             if not description and product_combo.currentData() is None:
                 # skip empty rows
                 continue
@@ -187,7 +202,8 @@ class InvoiceDialog(QtWidgets.QDialog):
                     "description": description or product_combo.currentText(),
                     "quantity": qty,
                     "unit_price": price,
-                    "line_total": qty * price,
+                    "discount": discount,
+                    "line_total": qty * price * (1 - discount / 100),
                 }
             )
         return items
@@ -216,6 +232,7 @@ class InvoiceDialog(QtWidgets.QDialog):
                 description=item["description"],
                 quantity=item["quantity"],
                 unit_price=item["unit_price"],
+                discount=item.get("discount", 0.0),
             )
         self.recalculate_totals()
 
@@ -234,6 +251,16 @@ class InvoiceDialog(QtWidgets.QDialog):
             "status": self.status_combo.currentText(),
             "total_amount": sum(item["line_total"] for item in items),
         }
+
+        if self.max_discount:
+            for item in items:
+                if float(item.get("discount", 0)) > self.max_discount:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "Discount",
+                        f"Maximum discount is {self.max_discount}%. Please adjust your items.",
+                    )
+                    return
 
         try:
             if self.invoice_id:

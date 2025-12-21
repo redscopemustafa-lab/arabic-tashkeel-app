@@ -30,6 +30,9 @@ class SettingsPage(QtWidgets.QWidget):
         self.company_phone_edit = QtWidgets.QLineEdit()
         self.company_address_edit = QtWidgets.QTextEdit()
         self.currency_edit = QtWidgets.QLineEdit()
+        self.max_discount_spin = QtWidgets.QDoubleSpinBox()
+        self.max_discount_spin.setRange(0, 100)
+        self.max_discount_spin.setSuffix(" %")
 
         self.theme_combo = QtWidgets.QComboBox()
         self.theme_combo.addItem("Dark", "dark")
@@ -45,6 +48,7 @@ class SettingsPage(QtWidgets.QWidget):
         form.addRow(translate(self.language, "company_phone"), self.company_phone_edit)
         form.addRow(translate(self.language, "company_address"), self.company_address_edit)
         form.addRow(translate(self.language, "default_currency"), self.currency_edit)
+        form.addRow("Max Discount", self.max_discount_spin)
         form.addRow(translate(self.language, "theme"), self.theme_combo)
         form.addRow(translate(self.language, "language"), self.language_combo)
 
@@ -59,6 +63,7 @@ class SettingsPage(QtWidgets.QWidget):
         form_layout.labelForField(self.company_phone_edit).setText(translate(self.language, "company_phone"))
         form_layout.labelForField(self.company_address_edit).setText(translate(self.language, "company_address"))
         form_layout.labelForField(self.currency_edit).setText(translate(self.language, "default_currency"))
+        form_layout.labelForField(self.max_discount_spin).setText("Max Discount")
         form_layout.labelForField(self.theme_combo).setText(translate(self.language, "theme"))
         form_layout.labelForField(self.language_combo).setText(translate(self.language, "language"))
         # Save button is always the last row
@@ -73,6 +78,7 @@ class SettingsPage(QtWidgets.QWidget):
         self.company_phone_edit.setText(data.get("company_phone", ""))
         self.company_address_edit.setPlainText(data.get("company_address", ""))
         self.currency_edit.setText(data.get("default_currency", ""))
+        self.max_discount_spin.setValue(float(data.get("max_discount", 0) or 0))
         theme = data.get("theme", "dark")
         language = data.get("language", "en")
         self.language = language
@@ -86,6 +92,7 @@ class SettingsPage(QtWidgets.QWidget):
             "company_phone": self.company_phone_edit.text().strip(),
             "company_address": self.company_address_edit.toPlainText().strip(),
             "default_currency": self.currency_edit.text().strip() or "USD",
+            "max_discount": float(self.max_discount_spin.value()),
             "theme": self.theme_combo.currentData(),
             "language": self.language_combo.currentData(),
         }
@@ -96,6 +103,7 @@ class SettingsPage(QtWidgets.QWidget):
             data["default_currency"],
             data["theme"],
             data["language"],
+            data["max_discount"],
         )
         self.settings_saved.emit(data)
         QtWidgets.QMessageBox.information(

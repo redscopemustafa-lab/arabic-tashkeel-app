@@ -1,6 +1,7 @@
 """SQLite database helper for Noura Accounting."""
 
 import sqlite3
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -46,6 +47,8 @@ class DatabaseManager:
                 name TEXT NOT NULL,
                 description TEXT,
                 unit_price REAL NOT NULL,
+                cost_price REAL NOT NULL DEFAULT 0,
+                sale_price REAL NOT NULL DEFAULT 0,
                 stock INTEGER NOT NULL DEFAULT 0,
                 unit TEXT,
                 created_at DATETIME
@@ -76,6 +79,7 @@ class DatabaseManager:
                 description TEXT,
                 quantity REAL,
                 unit_price REAL,
+                discount REAL DEFAULT 0,
                 line_total REAL,
                 FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE,
                 FOREIGN KEY(product_id) REFERENCES products(id)
@@ -91,7 +95,19 @@ class DatabaseManager:
                 company_address TEXT,
                 default_currency TEXT,
                 theme TEXT,
-                language TEXT
+                language TEXT,
+                max_discount REAL DEFAULT 0
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admin_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                license_key TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1
             )
             """
         )
@@ -111,6 +127,43 @@ class DatabaseManager:
         if "stock" not in columns:
             self.conn.execute(
                 "ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 0"
+            )
+            self.conn.commit()
+        if "cost_price" not in columns:
+            self.conn.execute(
+                "ALTER TABLE products ADD COLUMN cost_price REAL NOT NULL DEFAULT 0"
+            )
+            self.conn.execute(
+                "ALTER TABLE products ADD COLUMN sale_price REAL NOT NULL DEFAULT 0"
+            )
+            # keep unit_price for backward compatibility but align values
+            self.conn.execute("UPDATE products SET sale_price = unit_price WHERE sale_price = 0")
+            self.conn.commit()
+
+        cur = self.conn.execute("PRAGMA table_info(invoice_items)")
+        item_columns = {row[1] for row in cur.fetchall()}
+        if "discount" not in item_columns:
+            self.conn.execute(
+                "ALTER TABLE invoice_items ADD COLUMN discount REAL DEFAULT 0"
+            )
+            self.conn.commit()
+
+        cur = self.conn.execute("PRAGMA table_info(settings)")
+        settings_cols = {row[1] for row in cur.fetchall()}
+        if "max_discount" not in settings_cols:
+            self.conn.execute(
+                "ALTER TABLE settings ADD COLUMN max_discount REAL DEFAULT 0"
+            )
+            self.conn.commit()
+
+        # Ensure admin_users table has at least one default admin
+        cur = self.conn.execute("SELECT COUNT(*) FROM admin_users")
+        if cur.fetchone()[0] == 0:
+            # Default admin credentials: admin / admin / DEMO-KEY (should be changed in production)
+            default_hash = hashlib.sha256("admin".encode()).hexdigest()
+            self.conn.execute(
+                "INSERT INTO admin_users (username, password_hash, license_key, is_active) VALUES (?, ?, ?, 1)",
+                ("admin", default_hash, "DEMO-KEY"),
             )
             self.conn.commit()
 
@@ -175,9 +228,9 @@ class DatabaseManager:
             self.conn.execute(
                 """
                 INSERT INTO settings (
-                    id, company_name, company_phone, company_address, default_currency, theme, language
+                    id, company_name, company_phone, company_address, default_currency, theme, language, max_discount
                 )
-                VALUES (1, 'Noura', '', '', 'USD', 'dark', 'en')
+                VALUES (1, 'Noura', '', '', 'USD', 'dark', 'en', 0)
                 """
             )
             self.conn.commit()
@@ -234,7 +287,7 @@ class DatabaseManager:
     def fetch_products(self) -> List[sqlite3.Row]:
         cur = self.conn.execute(
             """
-            SELECT id, name, description, unit_price, stock, unit, created_at
+            SELECT id, name, description, unit_price, cost_price, sale_price, stock, unit, created_at
             FROM products ORDER BY id DESC
             """
         )
@@ -244,13 +297,15 @@ class DatabaseManager:
         now = datetime.utcnow().isoformat()
         cur = self.conn.execute(
             """
-            INSERT INTO products (name, description, unit_price, stock, unit, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO products (name, description, unit_price, cost_price, sale_price, stock, unit, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data.get("name"),
                 data.get("description"),
-                data.get("unit_price", 0.0),
+                data.get("unit_price", data.get("sale_price", 0.0)),
+                data.get("cost_price", 0.0),
+                data.get("sale_price", data.get("unit_price", 0.0)),
                 data.get("stock", 0),
                 data.get("unit"),
                 now,
@@ -263,13 +318,15 @@ class DatabaseManager:
         self.conn.execute(
             """
             UPDATE products
-            SET name=?, description=?, unit_price=?, stock=?, unit=?
+            SET name=?, description=?, unit_price=?, cost_price=?, sale_price=?, stock=?, unit=?
             WHERE id=?
             """,
             (
                 data.get("name"),
                 data.get("description"),
-                data.get("unit_price", 0.0),
+                data.get("unit_price", data.get("sale_price", 0.0)),
+                data.get("cost_price", 0.0),
+                data.get("sale_price", data.get("unit_price", 0.0)),
                 data.get("stock", 0),
                 data.get("unit"),
                 product_id,
@@ -308,8 +365,8 @@ class DatabaseManager:
             for item in items:
                 cur.execute(
                     """
-                    INSERT INTO invoice_items (invoice_id, product_id, description, quantity, unit_price, line_total)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO invoice_items (invoice_id, product_id, description, quantity, unit_price, discount, line_total)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         invoice_id,
@@ -317,6 +374,7 @@ class DatabaseManager:
                         item.get("description"),
                         item.get("quantity", 0.0),
                         item.get("unit_price", 0.0),
+                        item.get("discount", 0.0),
                         item.get("line_total", 0.0),
                     ),
                 )
@@ -358,8 +416,8 @@ class DatabaseManager:
             for item in items:
                 cur.execute(
                     """
-                    INSERT INTO invoice_items (invoice_id, product_id, description, quantity, unit_price, line_total)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO invoice_items (invoice_id, product_id, description, quantity, unit_price, discount, line_total)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         invoice_id,
@@ -367,6 +425,7 @@ class DatabaseManager:
                         item.get("description"),
                         item.get("quantity", 0.0),
                         item.get("unit_price", 0.0),
+                        item.get("discount", 0.0),
                         item.get("line_total", 0.0),
                     ),
                 )
@@ -419,7 +478,7 @@ class DatabaseManager:
 
         items_cur = self.conn.execute(
             """
-            SELECT p.name as product_name, ii.description, ii.quantity, ii.unit_price, ii.line_total
+            SELECT p.name as product_name, ii.description, ii.quantity, ii.unit_price, ii.discount, ii.line_total
             FROM invoice_items ii
             LEFT JOIN products p ON p.id = ii.product_id
             WHERE ii.invoice_id=?
@@ -450,7 +509,7 @@ class DatabaseManager:
     def fetch_invoice_items(self, invoice_id: int) -> List[sqlite3.Row]:
         cur = self.conn.execute(
             """
-            SELECT id, invoice_id, product_id, description, quantity, unit_price, line_total
+            SELECT id, invoice_id, product_id, description, quantity, unit_price, discount, line_total
             FROM invoice_items
             WHERE invoice_id=?
             """,
@@ -481,11 +540,106 @@ class DatabaseManager:
         )
         return [(row[0] or "Unknown", row[1] or 0.0) for row in cur.fetchall()]
 
+    def daily_income(self, days: int = 30) -> List[Tuple[str, float, float]]:
+        """Return list of (date, gross, net) for recent days."""
+        cur = self.conn.execute(
+            """
+            SELECT i.invoice_date as d,
+                   SUM(ii.quantity * ii.unit_price) as gross,
+                   SUM(ii.quantity * IFNULL(p.cost_price,0)) as cost,
+                   SUM(ii.quantity * ii.unit_price * (ii.discount/100.0)) as discount_amt
+            FROM invoice_items ii
+            JOIN invoices i ON i.id = ii.invoice_id
+            LEFT JOIN products p ON p.id = ii.product_id
+            WHERE i.invoice_date >= date('now', ?)
+            GROUP BY i.invoice_date
+            ORDER BY i.invoice_date DESC
+            LIMIT ?
+            """,
+            (f"-{days} day", days),
+        )
+        rows = cur.fetchall()
+        return [(
+            row[0],
+            row[1] or 0.0,
+            (row[1] or 0.0) - (row[2] or 0.0) - (row[3] or 0.0),
+        ) for row in rows]
+
+    def monthly_income(self, months: int = 12) -> List[Tuple[str, float, float]]:
+        cur = self.conn.execute(
+            """
+            SELECT strftime('%Y-%m', i.invoice_date) as m,
+                   SUM(ii.quantity * ii.unit_price) as gross,
+                   SUM(ii.quantity * IFNULL(p.cost_price,0)) as cost,
+                   SUM(ii.quantity * ii.unit_price * (ii.discount/100.0)) as discount_amt
+            FROM invoice_items ii
+            JOIN invoices i ON i.id = ii.invoice_id
+            LEFT JOIN products p ON p.id = ii.product_id
+            GROUP BY m
+            ORDER BY m DESC
+            LIMIT ?
+            """,
+            (months,),
+        )
+        rows = cur.fetchall()
+        return [(
+            row[0],
+            row[1] or 0.0,
+            (row[1] or 0.0) - (row[2] or 0.0) - (row[3] or 0.0),
+        ) for row in rows]
+
+    def yearly_income(self, years: int = 5) -> List[Tuple[str, float, float]]:
+        cur = self.conn.execute(
+            """
+            SELECT strftime('%Y', i.invoice_date) as y,
+                   SUM(ii.quantity * ii.unit_price) as gross,
+                   SUM(ii.quantity * IFNULL(p.cost_price,0)) as cost,
+                   SUM(ii.quantity * ii.unit_price * (ii.discount/100.0)) as discount_amt
+            FROM invoice_items ii
+            JOIN invoices i ON i.id = ii.invoice_id
+            LEFT JOIN products p ON p.id = ii.product_id
+            GROUP BY y
+            ORDER BY y DESC
+            LIMIT ?
+            """,
+            (years,),
+        )
+        rows = cur.fetchall()
+        return [(
+            row[0],
+            row[1] or 0.0,
+            (row[1] or 0.0) - (row[2] or 0.0) - (row[3] or 0.0),
+        ) for row in rows]
+
+    def product_sales_summary(self) -> List[Dict[str, Any]]:
+        cur = self.conn.execute(
+            """
+            SELECT p.name, SUM(ii.quantity) as qty, SUM(ii.line_total) as revenue,
+                   SUM(ii.quantity * ii.unit_price * (ii.discount/100.0)) as discount_amt
+            FROM invoice_items ii
+            LEFT JOIN products p ON p.id = ii.product_id
+            GROUP BY p.name
+            ORDER BY revenue DESC
+            """
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    def authenticate_admin(self, username: str, password: str, license_key: str) -> bool:
+        pwd_hash = hashlib.sha256(password.encode()).hexdigest()
+        cur = self.conn.execute(
+            """
+            SELECT id FROM admin_users
+            WHERE username=? AND password_hash=? AND license_key=? AND is_active=1
+            """,
+            (username, pwd_hash, license_key),
+        )
+        return cur.fetchone() is not None
+
     # Settings helpers
     def get_settings(self) -> Dict[str, Any]:
         cur = self.conn.execute(
             """
-            SELECT company_name, company_phone, company_address, default_currency, theme, language
+            SELECT company_name, company_phone, company_address, default_currency, theme, language, max_discount
             FROM settings WHERE id = 1
             """
         )
@@ -500,6 +654,7 @@ class DatabaseManager:
                 "default_currency": "USD",
                 "theme": "dark",
                 "language": "en",
+                "max_discount": 0,
             }
         return dict(row)
 
@@ -511,20 +666,22 @@ class DatabaseManager:
         default_currency: str,
         theme: str,
         language: str,
+        max_discount: float,
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO settings (id, company_name, company_phone, company_address, default_currency, theme, language)
-            VALUES (1, ?, ?, ?, ?, ?, ?)
+            INSERT INTO settings (id, company_name, company_phone, company_address, default_currency, theme, language, max_discount)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 company_name=excluded.company_name,
                 company_phone=excluded.company_phone,
                 company_address=excluded.company_address,
                 default_currency=excluded.default_currency,
                 theme=excluded.theme,
-                language=excluded.language
+                language=excluded.language,
+                max_discount=excluded.max_discount
             """,
-            (company_name, company_phone, company_address, default_currency, theme, language),
+            (company_name, company_phone, company_address, default_currency, theme, language, max_discount),
         )
         self.conn.commit()
 
