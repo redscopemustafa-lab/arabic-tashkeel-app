@@ -114,6 +114,58 @@ class DatabaseManager:
             )
             self.conn.commit()
 
+    # ------------------------------------------------------------------
+    # Stock helpers
+    # ------------------------------------------------------------------
+    def _validate_stock_levels(self, items: List[Dict[str, Any]]) -> None:
+        """Ensure there is enough stock for each product.
+
+        Raises a ValueError with a readable message if any product would drop
+        below zero. Custom line items (product_id is None) are ignored.
+        """
+
+        for item in items:
+            product_id = item.get("product_id")
+            quantity = float(item.get("quantity") or 0)
+            if product_id is None:
+                continue
+            cur = self.conn.execute(
+                "SELECT stock, name FROM products WHERE id=?", (product_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Product not found for invoice item")
+            if (row["stock"] or 0) < quantity:
+                raise ValueError(
+                    f"Insufficient stock for {row['name']} (have {row['stock']}, need {quantity})."
+                )
+
+    def _apply_stock_changes(self, items: List[Dict[str, Any]], multiplier: int) -> None:
+        """Increment or decrement stock for a list of items.
+
+        *multiplier* should be 1 to add back quantities (e.g. deleting invoices)
+        or -1 to subtract (e.g. creating invoices). Custom items are skipped.
+        """
+
+        for item in items:
+            product_id = item.get("product_id")
+            quantity = float(item.get("quantity") or 0)
+            if product_id is None:
+                continue
+            self.conn.execute(
+                "UPDATE products SET stock = stock + ? WHERE id=?",
+                (multiplier * quantity, product_id),
+            )
+
+    def get_invoice_item_quantities(self, invoice_id: int) -> List[Dict[str, Any]]:
+        """Return product_id/quantity pairs for an invoice (for stock handling)."""
+
+        cur = self.conn.execute(
+            "SELECT product_id, quantity FROM invoice_items WHERE invoice_id=?",
+            (invoice_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
     def _ensure_settings_row(self) -> None:
         """Guarantee a singleton settings row with defaults."""
 
@@ -233,79 +285,108 @@ class DatabaseManager:
     def add_invoice(self, invoice: Dict[str, Any], items: List[Dict[str, Any]]) -> int:
         now = datetime.utcnow().isoformat()
         cur = self.conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO invoices (invoice_number, customer_id, invoice_date, due_date, total_amount, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                invoice.get("invoice_number"),
-                invoice.get("customer_id"),
-                invoice.get("invoice_date"),
-                invoice.get("due_date"),
-                invoice.get("total_amount", 0.0),
-                invoice.get("status"),
-                now,
-            ),
-        )
-        invoice_id = cur.lastrowid
-        for item in items:
+        try:
+            # Validate stock before writing anything
+            self._validate_stock_levels(items)
+
             cur.execute(
                 """
-                INSERT INTO invoice_items (invoice_id, product_id, description, quantity, unit_price, line_total)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO invoices (invoice_number, customer_id, invoice_date, due_date, total_amount, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    invoice_id,
-                    item.get("product_id"),
-                    item.get("description"),
-                    item.get("quantity", 0.0),
-                    item.get("unit_price", 0.0),
-                    item.get("line_total", 0.0),
+                    invoice.get("invoice_number"),
+                    invoice.get("customer_id"),
+                    invoice.get("invoice_date"),
+                    invoice.get("due_date"),
+                    invoice.get("total_amount", 0.0),
+                    invoice.get("status"),
+                    now,
                 ),
             )
-        self.conn.commit()
-        return invoice_id
+            invoice_id = cur.lastrowid
+            for item in items:
+                cur.execute(
+                    """
+                    INSERT INTO invoice_items (invoice_id, product_id, description, quantity, unit_price, line_total)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        invoice_id,
+                        item.get("product_id"),
+                        item.get("description"),
+                        item.get("quantity", 0.0),
+                        item.get("unit_price", 0.0),
+                        item.get("line_total", 0.0),
+                    ),
+                )
+            # Subtract stock now that the invoice rows exist
+            self._apply_stock_changes(items, multiplier=-1)
+            self.conn.commit()
+            return invoice_id
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def update_invoice(self, invoice_id: int, invoice: Dict[str, Any], items: List[Dict[str, Any]]) -> None:
         cur = self.conn.cursor()
-        cur.execute(
-            """
-            UPDATE invoices
-            SET invoice_number=?, customer_id=?, invoice_date=?, due_date=?, total_amount=?, status=?
-            WHERE id=?
-            """,
-            (
-                invoice.get("invoice_number"),
-                invoice.get("customer_id"),
-                invoice.get("invoice_date"),
-                invoice.get("due_date"),
-                invoice.get("total_amount", 0.0),
-                invoice.get("status"),
-                invoice_id,
-            ),
-        )
-        cur.execute("DELETE FROM invoice_items WHERE invoice_id=?", (invoice_id,))
-        for item in items:
+        try:
+            previous_items = self.get_invoice_item_quantities(invoice_id)
+            # Restore stock from old items first
+            self._apply_stock_changes(previous_items, multiplier=1)
+
+            # Validate against the replenished stock before subtracting again
+            self._validate_stock_levels(items)
+
             cur.execute(
                 """
-                INSERT INTO invoice_items (invoice_id, product_id, description, quantity, unit_price, line_total)
-                VALUES (?, ?, ?, ?, ?, ?)
+                UPDATE invoices
+                SET invoice_number=?, customer_id=?, invoice_date=?, due_date=?, total_amount=?, status=?
+                WHERE id=?
                 """,
                 (
+                    invoice.get("invoice_number"),
+                    invoice.get("customer_id"),
+                    invoice.get("invoice_date"),
+                    invoice.get("due_date"),
+                    invoice.get("total_amount", 0.0),
+                    invoice.get("status"),
                     invoice_id,
-                    item.get("product_id"),
-                    item.get("description"),
-                    item.get("quantity", 0.0),
-                    item.get("unit_price", 0.0),
-                    item.get("line_total", 0.0),
                 ),
             )
-        self.conn.commit()
+            cur.execute("DELETE FROM invoice_items WHERE invoice_id=?", (invoice_id,))
+            for item in items:
+                cur.execute(
+                    """
+                    INSERT INTO invoice_items (invoice_id, product_id, description, quantity, unit_price, line_total)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        invoice_id,
+                        item.get("product_id"),
+                        item.get("description"),
+                        item.get("quantity", 0.0),
+                        item.get("unit_price", 0.0),
+                        item.get("line_total", 0.0),
+                    ),
+                )
+            # Apply stock decrease for new items
+            self._apply_stock_changes(items, multiplier=-1)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def delete_invoice(self, invoice_id: int) -> None:
-        self.conn.execute("DELETE FROM invoices WHERE id=?", (invoice_id,))
-        self.conn.commit()
+        try:
+            # Restore stock for all items before deleting
+            items = self.get_invoice_item_quantities(invoice_id)
+            self._apply_stock_changes(items, multiplier=1)
+            self.conn.execute("DELETE FROM invoices WHERE id=?", (invoice_id,))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def fetch_invoices(self) -> List[sqlite3.Row]:
         cur = self.conn.execute(
@@ -338,7 +419,7 @@ class DatabaseManager:
 
         items_cur = self.conn.execute(
             """
-            SELECT p.name as product_name, ii.quantity, ii.unit_price, ii.line_total
+            SELECT p.name as product_name, ii.description, ii.quantity, ii.unit_price, ii.line_total
             FROM invoice_items ii
             LEFT JOIN products p ON p.id = ii.product_id
             WHERE ii.invoice_id=?
