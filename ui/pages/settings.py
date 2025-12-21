@@ -1,46 +1,98 @@
 """Settings page for company info."""
 
-import json
-from pathlib import Path
-
-from qt_compat import QtWidgets
-
-SETTINGS_FILE = Path("settings.json")
+from qt_compat import QtWidgets, QtCore
+from ui.translations import translate
 
 
 class SettingsPage(QtWidgets.QWidget):
-    def __init__(self, parent=None):
+    settings_saved = QtCore.Signal(dict)
+
+    def __init__(self, db, language: str = "en", parent=None):
         super().__init__(parent)
+        self.db = db
+        self.language = language
         self._build_ui()
         self.load_settings()
+
+    def update_language(self, language: str):
+        self.language = language
+        self._refresh_labels()
 
     def _build_ui(self):
         layout = QtWidgets.QFormLayout(self)
 
         self.company_name_edit = QtWidgets.QLineEdit()
-        self.company_address_edit = QtWidgets.QPlainTextEdit()
+        self.company_phone_edit = QtWidgets.QLineEdit()
+        self.company_address_edit = QtWidgets.QTextEdit()
         self.currency_edit = QtWidgets.QLineEdit()
 
-        layout.addRow("Company Name", self.company_name_edit)
-        layout.addRow("Company Address", self.company_address_edit)
-        layout.addRow("Default Currency", self.currency_edit)
+        self.theme_combo = QtWidgets.QComboBox()
+        self.theme_combo.addItem("Dark", "dark")
+        self.theme_combo.addItem("Light", "light")
 
-        save_btn = QtWidgets.QPushButton("Save Settings")
+        self.language_combo = QtWidgets.QComboBox()
+        self.language_combo.addItem("Türkçe", "tr")
+        self.language_combo.addItem("English", "en")
+        self.language_combo.addItem("Bahasa Indonesia", "id")
+        self.language_combo.addItem("العربية", "ar")
+
+        layout.addRow(translate(self.language, "company_name"), self.company_name_edit)
+        layout.addRow(translate(self.language, "company_phone"), self.company_phone_edit)
+        layout.addRow(translate(self.language, "company_address"), self.company_address_edit)
+        layout.addRow(translate(self.language, "default_currency"), self.currency_edit)
+        layout.addRow(translate(self.language, "theme"), self.theme_combo)
+        layout.addRow(translate(self.language, "language"), self.language_combo)
+
+        save_btn = QtWidgets.QPushButton(translate(self.language, "save_settings"))
         save_btn.clicked.connect(self.save_settings)
         layout.addRow(save_btn)
 
+    def _refresh_labels(self):
+        form_layout: QtWidgets.QFormLayout = self.layout()  # type: ignore[assignment]
+        form_layout.labelForField(self.company_name_edit).setText(translate(self.language, "company_name"))
+        form_layout.labelForField(self.company_phone_edit).setText(translate(self.language, "company_phone"))
+        form_layout.labelForField(self.company_address_edit).setText(translate(self.language, "company_address"))
+        form_layout.labelForField(self.currency_edit).setText(translate(self.language, "default_currency"))
+        form_layout.labelForField(self.theme_combo).setText(translate(self.language, "theme"))
+        form_layout.labelForField(self.language_combo).setText(translate(self.language, "language"))
+        # Save button is always the last row
+        save_button = form_layout.itemAt(form_layout.rowCount() - 1, QtWidgets.QFormLayout.FieldRole).widget()
+        if save_button:
+            save_button.setText(translate(self.language, "save_settings"))
+
     def load_settings(self):
-        if SETTINGS_FILE.exists():
-            data = json.loads(SETTINGS_FILE.read_text())
-            self.company_name_edit.setText(data.get("company_name", ""))
-            self.company_address_edit.setPlainText(data.get("company_address", ""))
-            self.currency_edit.setText(data.get("default_currency", ""))
+        data = self.db.get_settings()
+        self.company_name_edit.setText(data.get("company_name", ""))
+        self.company_phone_edit.setText(data.get("company_phone", ""))
+        self.company_address_edit.setPlainText(data.get("company_address", ""))
+        self.currency_edit.setText(data.get("default_currency", ""))
+        theme = data.get("theme", "dark")
+        language = data.get("language", "en")
+        self.language = language
+        self.theme_combo.setCurrentIndex(self.theme_combo.findData(theme))
+        self.language_combo.setCurrentIndex(self.language_combo.findData(language))
+        self._refresh_labels()
 
     def save_settings(self):
         data = {
             "company_name": self.company_name_edit.text().strip(),
+            "company_phone": self.company_phone_edit.text().strip(),
             "company_address": self.company_address_edit.toPlainText().strip(),
-            "default_currency": self.currency_edit.text().strip(),
+            "default_currency": self.currency_edit.text().strip() or "USD",
+            "theme": self.theme_combo.currentData(),
+            "language": self.language_combo.currentData(),
         }
-        SETTINGS_FILE.write_text(json.dumps(data, indent=2))
-        QtWidgets.QMessageBox.information(self, "Settings", "Settings saved successfully.")
+        self.db.save_settings(
+            data["company_name"],
+            data["company_phone"],
+            data["company_address"],
+            data["default_currency"],
+            data["theme"],
+            data["language"],
+        )
+        self.settings_saved.emit(data)
+        QtWidgets.QMessageBox.information(
+            self,
+            translate(self.language, "save_settings"),
+            "Settings saved. Theme or language changes may require an app restart.",
+        )
