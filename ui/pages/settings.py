@@ -19,7 +19,12 @@ class SettingsPage(QtWidgets.QWidget):
         self._refresh_labels()
 
     def _build_ui(self):
-        layout = QtWidgets.QFormLayout(self)
+        layout = QtWidgets.QVBoxLayout(self)
+        self.title_label = QtWidgets.QLabel(translate(self.language, "settings"))
+        self.title_label.setStyleSheet("font-size: 18px; font-weight: 600;")
+        layout.addWidget(self.title_label)
+
+        form = QtWidgets.QFormLayout()
 
         self.company_name_edit = QtWidgets.QLineEdit()
         self.company_phone_edit = QtWidgets.QLineEdit()
@@ -36,19 +41,20 @@ class SettingsPage(QtWidgets.QWidget):
         self.language_combo.addItem("Bahasa Indonesia", "id")
         self.language_combo.addItem("العربية", "ar")
 
-        layout.addRow(translate(self.language, "company_name"), self.company_name_edit)
-        layout.addRow(translate(self.language, "company_phone"), self.company_phone_edit)
-        layout.addRow(translate(self.language, "company_address"), self.company_address_edit)
-        layout.addRow(translate(self.language, "default_currency"), self.currency_edit)
-        layout.addRow(translate(self.language, "theme"), self.theme_combo)
-        layout.addRow(translate(self.language, "language"), self.language_combo)
+        form.addRow(translate(self.language, "company_name"), self.company_name_edit)
+        form.addRow(translate(self.language, "company_phone"), self.company_phone_edit)
+        form.addRow(translate(self.language, "company_address"), self.company_address_edit)
+        form.addRow(translate(self.language, "default_currency"), self.currency_edit)
+        form.addRow(translate(self.language, "theme"), self.theme_combo)
+        form.addRow(translate(self.language, "language"), self.language_combo)
 
         save_btn = QtWidgets.QPushButton(translate(self.language, "save_settings"))
         save_btn.clicked.connect(self.save_settings)
-        layout.addRow(save_btn)
+        form.addRow(save_btn)
+        layout.addLayout(form)
 
     def _refresh_labels(self):
-        form_layout: QtWidgets.QFormLayout = self.layout()  # type: ignore[assignment]
+        form_layout: QtWidgets.QFormLayout = self.layout().itemAt(1).layout()  # type: ignore[assignment]
         form_layout.labelForField(self.company_name_edit).setText(translate(self.language, "company_name"))
         form_layout.labelForField(self.company_phone_edit).setText(translate(self.language, "company_phone"))
         form_layout.labelForField(self.company_address_edit).setText(translate(self.language, "company_address"))
@@ -59,6 +65,7 @@ class SettingsPage(QtWidgets.QWidget):
         save_button = form_layout.itemAt(form_layout.rowCount() - 1, QtWidgets.QFormLayout.FieldRole).widget()
         if save_button:
             save_button.setText(translate(self.language, "save_settings"))
+        self.title_label.setText(translate(self.language, "settings"))
 
     def load_settings(self):
         data = self.db.get_settings()

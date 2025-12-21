@@ -27,6 +27,10 @@ class InvoicesPage(QtWidgets.QWidget):
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
 
+        self.title_label = QtWidgets.QLabel(translate(self.language, "invoices"))
+        self.title_label.setStyleSheet("font-size: 18px; font-weight: 600;")
+        layout.addWidget(self.title_label)
+
         button_row = QtWidgets.QHBoxLayout()
         add_btn = QtWidgets.QPushButton(translate(self.language, "new_invoice"))
         edit_btn = QtWidgets.QPushButton(translate(self.language, "edit_invoice"))
@@ -107,7 +111,8 @@ class InvoicesPage(QtWidgets.QWidget):
         ]
         self.table.setHorizontalHeaderLabels(headers)
         # Button labels are refreshed on update_settings
-        button_layout = self.layout().itemAt(0).layout()
+        button_layout = self.layout().itemAt(1).layout()
+        self.title_label.setText(translate(self.language, "invoices"))
         button_layout.itemAt(0).widget().setText(translate(self.language, "new_invoice"))
         button_layout.itemAt(1).widget().setText(translate(self.language, "edit_invoice"))
         button_layout.itemAt(2).widget().setText(translate(self.language, "delete_invoice"))
@@ -138,38 +143,13 @@ class InvoicesPage(QtWidgets.QWidget):
         if not filename:
             return
 
-        # Build minimal HTML for the invoice. Keeping it simple makes the export
-        # reliable while still readable.
-        items_rows = "".join(
-            f"<tr><td>{item['product_name'] or ''}</td><td>{item['quantity']}</td>"
-            f"<td>{item['unit_price']:.2f}{currency_suffix}</td>"
-            f"<td>{item['line_total']:.2f}{currency_suffix}</td></tr>" for item in invoice.get("items", [])
-        )
-        company_address_html = (settings.get("company_address", "") or "").replace("\n", "<br>")
-        customer_address_html = (invoice.get("customer_address") or "").replace("\n", "<br>")
-        html = f"""
-        <h1>{settings.get('company_name', 'Noura')}</h1>
-        <p>{company_address_html}<br/>{settings.get('company_phone', '')}</p>
-        <h2>Invoice {invoice.get('number')}</h2>
-        <p>Status: <b>{invoice.get('status') or ''}</b><br/>
-        Date: {invoice.get('date') or ''}<br/>
-        Due: {invoice.get('due_date') or ''}</p>
-        <h3>Bill To</h3>
-        <p><b>{invoice.get('customer_name') or ''}</b><br/>{customer_address_html}</p>
-        <table border="1" cellspacing="0" cellpadding="4" width="100%">
-            <tr><th>Product</th><th>Quantity</th><th>Unit Price</th><th>Total</th></tr>
-            {items_rows}
-        </table>
-        <h3 style="text-align:right;">Grand Total: {invoice.get('total') or 0:.2f}{currency_suffix}</h3>
-        """
-
-        document = QTextDocument()
-        document.setHtml(html)
-        printer = QPrinter(QPrinter.HighResolution)
-        printer.setOutputFormat(QPrinter.PdfFormat)
-        printer.setOutputFileName(filename)
-        document.print(printer)
-        QtWidgets.QMessageBox.information(self, "Export", "Invoice exported as PDF.")
+        try:
+            if not filename.lower().endswith(".pdf"):
+                filename += ".pdf"
+            self._export_invoice_to_pdf(invoice, filename, settings, currency_suffix)
+            QtWidgets.QMessageBox.information(self, "Export", "Invoice exported as PDF.")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Export", f"Failed to export invoice: {exc}")
 
     def delete_invoice(self):
         invoice_id = self._selected_invoice_id()
@@ -182,3 +162,62 @@ class InvoicesPage(QtWidgets.QWidget):
         if confirm == QtWidgets.QMessageBox.Yes:
             self.db.delete_invoice(invoice_id)
             self.load_invoices()
+
+    def _export_invoice_to_pdf(self, invoice: dict, filename: str, settings: dict, currency_suffix: str) -> None:
+        """Render an invoice to a PDF file using QTextDocument/QPrinter."""
+
+        items_rows = "".join(
+            f"<tr><td>{item.get('product_name') or item.get('description') or ''}</td>"
+            f"<td>{item.get('quantity')}</td>"
+            f"<td>{float(item.get('unit_price') or 0):.2f}{currency_suffix}</td>"
+            f"<td>{float(item.get('line_total') or 0):.2f}{currency_suffix}</td></tr>" for item in invoice.get("items", [])
+        )
+
+        company_address_html = (settings.get("company_address", "") or "").replace("\n", "<br>")
+        customer_address_html = (invoice.get("customer_address") or "").replace("\n", "<br>")
+
+        html = f"""
+        <html>
+        <head>
+        <style>
+        body {{ font-family: 'Segoe UI', sans-serif; color: #222; }}
+        .header {{ display: flex; justify-content: space-between; align-items: flex-start; }}
+        .box {{ padding: 8px; }}
+        table {{ border-collapse: collapse; width: 100%; margin-top: 12px; }}
+        th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
+        th {{ background: #f2f2f2; }}
+        .total {{ text-align: right; font-size: 18px; margin-top: 12px; }}
+        </style>
+        </head>
+        <body>
+            <div class="header">
+                <div class="box">
+                    <h1>{settings.get('company_name', 'Noura')}</h1>
+                    <p>{company_address_html}<br/>{settings.get('company_phone', '')}</p>
+                </div>
+                <div class="box" style="text-align:right;">
+                    <h2>Invoice {invoice.get('number')}</h2>
+                    <p>Status: <b>{invoice.get('status') or ''}</b><br/>
+                    Date: {invoice.get('date') or ''}<br/>
+                    Due: {invoice.get('due_date') or ''}</p>
+                </div>
+            </div>
+
+            <h3>Bill To</h3>
+            <p><b>{invoice.get('customer_name') or ''}</b><br/>{customer_address_html}</p>
+
+            <table>
+                <tr><th>Product</th><th>Quantity</th><th>Unit Price</th><th>Total</th></tr>
+                {items_rows}
+            </table>
+            <p class="total"><b>Grand Total: {invoice.get('total') or 0:.2f}{currency_suffix}</b></p>
+        </body>
+        </html>
+        """
+
+        document = QTextDocument()
+        document.setHtml(html)
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setOutputFormat(QPrinter.PdfFormat)
+        printer.setOutputFileName(filename)
+        document.print(printer)
